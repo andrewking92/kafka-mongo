@@ -1,0 +1,109 @@
+package com.example;
+
+/*
+ * Copyright 2008-present MongoDB, Inc.
+
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+
+import java.util.HashMap;
+import java.util.Map;
+
+import com.mongodb.client.MongoClient;
+import com.mongodb.client.MongoClients;
+import com.mongodb.client.MongoCollection;
+
+import org.bson.BsonString;
+import org.bson.BsonBinary;
+
+import com.mongodb.client.vault.ClientEncryption;
+import com.mongodb.client.vault.ClientEncryptions;
+import com.mongodb.client.model.vault.EncryptOptions;
+
+import com.mongodb.ConnectionString;
+import com.mongodb.MongoClientSettings;
+import com.mongodb.ClientEncryptionSettings;
+import com.mongodb.client.model.vault.DataKeyOptions;
+
+import org.bson.Document;
+
+import java.io.FileInputStream;
+
+public class InsertExplicitEncryptionDocument {
+
+    public static void main(String[] args) throws Exception {
+        Map<String, String> credentials = YourCredentials.getCredentials();
+        String recordsDb = "encryption";
+        String recordsColl = "inbound";
+        
+        // start-key-vault
+        String keyVaultNamespace = "encryption.__keyVault";
+        // end-key-vault
+
+        String connectionString = credentials.get("MONGODB_URI");
+
+        // start-kmsproviders
+        String kmsProvider = "local";
+        String path = "master-key.txt";
+
+        byte[] localMasterKeyRead = new byte[96];
+        
+        try (FileInputStream fis = new FileInputStream(path)) {
+            if (fis.read(localMasterKeyRead) < 96)
+                throw new Exception("Expected to read 96 bytes from file");
+        }
+        Map<String, Object> keyMap = new HashMap<String, Object>();
+        keyMap.put("key", localMasterKeyRead);
+        
+        Map<String, Map<String, Object>> kmsProviders = new HashMap<String, Map<String, Object>>();
+        kmsProviders.put("local", keyMap);
+        // end-kmsproviders
+
+
+        // start-extra-options
+        Map<String, Object> extraOptions = new HashMap<String, Object>();
+        extraOptions.put("mongocryptdSpawnPath", credentials.get("MONGOCRYPTD_PATH"));
+        // end-extra-options
+
+        MongoClientSettings clientSettingsRegular = MongoClientSettings.builder()
+            .applyConnectionString(new ConnectionString(connectionString))
+            .build();
+
+        MongoClient mongoClientRegular = MongoClients.create(clientSettingsRegular);
+
+
+        MongoCollection<Document> collection = mongoClientRegular.getDatabase(recordsDb).getCollection(recordsColl);
+        ClientEncryptionSettings clientEncryptionSettings = ClientEncryptionSettings.builder()
+                .keyVaultMongoClientSettings(MongoClientSettings.builder()
+                        .applyConnectionString(new ConnectionString(connectionString))
+                        .build())
+                .keyVaultNamespace(keyVaultNamespace)
+                .kmsProviders(kmsProviders)
+                .build();
+        ClientEncryption mongoClientSecure = ClientEncryptions.create(clientEncryptionSettings);
+
+
+        BsonBinary dataKeyId = mongoClientSecure.createDataKey("local", new DataKeyOptions());
+ 
+         // Explicitly encrypt a field
+        BsonBinary encryptedFieldValue = mongoClientSecure.encrypt(new BsonString("123456789"),
+                new EncryptOptions("AEAD_AES_256_CBC_HMAC_SHA_512-Deterministic").keyId(dataKeyId));
+ 
+        collection.insertOne(new Document("encryptedField", encryptedFieldValue));
+
+        mongoClientSecure.close();
+        mongoClientRegular.close();
+    }
+}
